@@ -8,7 +8,9 @@ from bs4 import BeautifulSoup
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 import json
-
+import xlwt
+from frappe.utils.password import get_decrypted_password
+import paramiko
 
 @frappe.whitelist()
 def generate_excel_for_folder(payment_order_id=None):
@@ -116,12 +118,14 @@ def generate_excel_for_folder(payment_order_id=None):
 
     return generate(data, payment_order_id)
 
-
 def generate(data, payment_order_id=None):
-    
+    import xlwt
+    from datetime import datetime
+    import frappe
+
     field_mapping = {
-        "payment_order_id": "Payment Order ID",  # Pehli column
-        "payment_summary_id": "Payment Summary ID",  # Dusri column
+        "payment_order_id": "Payment Order ID",
+        "payment_summary_id": "Payment Summary ID",
         "debit_ac_no": "Debit Ac No",
         "beneficiary_ac_no": "Beneficiary Ac No",
         "beneficiary_name": "Beneficiary Name",
@@ -145,8 +149,13 @@ def generate(data, payment_order_id=None):
         "custom_remarks": "Remarks",
     }
 
-
     headers = list(field_mapping.values())
+    wb = xlwt.Workbook()
+    ws = wb.add_sheet("Sheet1")
+
+  
+    for col, header in enumerate(headers):
+        ws.write(0, col, header)
 
     rows = []
     for record in data:
@@ -154,24 +163,75 @@ def generate(data, payment_order_id=None):
             row = {field_mapping.get(k, k): v for k, v in item.items()}
             rows.append(row)
 
-    df = pd.DataFrame(rows, columns=headers)
+    
+    for row_idx, row_data in enumerate(rows, start=1):
+        for col_idx, header in enumerate(headers):
+            value = row_data.get(header)
+            if header == "Date" and value:
+                try:
+                    
+                    value = datetime.strptime(value, "%Y-%m-%d").strftime("%d-%m-%Y")
+                except:
+                    pass
+            ws.write(row_idx, col_idx, str(value) if value is not None else "")
 
-    filename = record["name"]+"-"+ datetime.now().strftime("%Y%m%d_%H%M%S") + ".xlsx"
+    #filename = record["name"] + "-" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".xls"
+    filename = record["name"] + ".xls"
     file_path = f"/home/subodhbarche/Desktop/new_jfs/frappe-bench/sites/jfs_new/public/files/{filename}"
 
-    df.to_excel(file_path, index=False)
-    
+    wb.save(file_path)
+
     frappe.db.set_value("Payment Order", record["name"], "custom_generated_file", f"/files/{filename}")
     frappe.db.commit()
-
-    updated_value = frappe.db.get_value("Payment Order", record["name"], "custom_generated_file")
-    frappe.logger().info(f"Updated custom_generated_file: {updated_value}")  
-
- 
+    frappe.logger().info(f"Updated custom_generated_file: /files/{filename}")
     frappe.publish_realtime("refresh_payment_order", {"docname": record["name"]})
 
-    
-    return {"file_path": file_path, "file_name": filename}
+
+    #********File upload start*********************
+
+
+    doc = frappe.get_single("Snorkal Configuration")
+    ip_address = doc.ip_address
+    username = doc.username
+    password = get_decrypted_password(
+        doctype='Snorkal Configuration',
+        name='Snorkal Configuration',
+        fieldname='password'
+    )
+
+    if not all([ip_address, username, password]):
+        frappe.throw("SFTP configuration is incomplete. Please ensure the IP address, username, and password are correctly set in Snorkal Configuration.")
+
+    file_name = os.path.basename(file_path)
+    remote_path = os.path.join("/home/snorkal/inBound", file_name)
+
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    try:
+        ssh.connect(hostname=ip_address, username=username, password=password)
+        sftp = ssh.open_sftp()
+        sftp.put(file_path, remote_path)
+        sftp.close()
+        ssh.close()
+        frappe.logger().info(f"SFTP upload successful: {remote_path}")
+
+    except paramiko.AuthenticationException:
+        frappe.logger().error("SFTP authentication failed. Invalid username or password.")
+        frappe.throw("Authentication failed while connecting to the SFTP server. Please verify the username and password.")
+
+    except paramiko.SSHException as e:
+        frappe.logger().error(f"SSH connection error: {e}")
+        frappe.throw("An SSH error occurred while trying to connect to the SFTP server. Please check the server status and network connection.")
+
+    except FileNotFoundError as e:
+        frappe.logger().error(f"File not found: {e}")
+        frappe.throw("The specified file was not found. Please verify that the file path is correct.")
+
+    except Exception as e:
+        frappe.logger().error(f"Unexpected error during SFTP upload: {e}")
+        frappe.throw("An unexpected error occurred during the SFTP upload. Please check the logs for more details.")
+
 
 
 
