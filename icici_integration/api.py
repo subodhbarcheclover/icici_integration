@@ -11,10 +11,40 @@ import json
 import xlwt
 from frappe.utils.password import get_decrypted_password
 import paramiko
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from .email_utils import EmailSender
+import xlwt
+from frappe import _
+
+
+
+
+@frappe.whitelist(allow_guest=True)
+def vulnerable_api(user_input=None):
+   
+    if not user_input:
+        user_input = frappe.local.form_dict.get('user_input')
+    query = f"SELECT name FROM `tabUser` WHERE email = '{user_input}'"
+    result = frappe.db.sql(query)
+    return [r[0] for r in result]
+
+
+
+# @frappe.whitelist(allow_guest=True)
+# def vulnerable_api(user_input):
+    
+#     query = f"SELECT name FROM `tabUser` WHERE email = '{user_input}'"
+#     result = frappe.db.sql(query)
+#     return [r[0] for r in result]
+
+
+
 
 @frappe.whitelist()
 def generate_excel_for_folder(payment_order_id=None):
-    
+
 
     filters = {"docstatus": 1}  
     if payment_order_id:
@@ -119,9 +149,22 @@ def generate_excel_for_folder(payment_order_id=None):
     return generate(data, payment_order_id)
 
 def generate(data, payment_order_id=None):
-    import xlwt
-    from datetime import datetime
-    import frappe
+    doc = frappe.get_single("Email Configuration")
+    smtp_server = doc.smtp_server
+    username = doc.username
+    port = doc.port
+    password = get_decrypted_password(
+        doctype='Email Configuration',
+        name='Email Configuration',
+        fieldname='password'
+    )
+
+
+    email = frappe.db.get_value("User", frappe.session.user, "email")
+
+    email_sender = EmailSender(smtp_server, port, username, password)
+    
+
 
     field_mapping = {
         "payment_order_id": "Payment Order ID",
@@ -203,7 +246,8 @@ def generate(data, payment_order_id=None):
         frappe.throw("SFTP configuration is incomplete. Please ensure the IP address, username, and password are correctly set in Snorkal Configuration.")
 
     file_name = os.path.basename(file_path)
-    remote_path = os.path.join("/home/snorkal/inBound", file_name)
+    #remote_path = os.path.join("/home/snorkal/inBound", file_name)
+    remote_path = os.path.join("/blkprodfile/subodh",file_name)
 
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -215,25 +259,115 @@ def generate(data, payment_order_id=None):
         sftp.close()
         ssh.close()
         frappe.logger().info(f"SFTP upload successful: {remote_path}")
+        subject = "SFTP Upload Successful"
+        body = """
+            Dear User,
+
+            Your file has been successfully uploaded to the SFTP server.
+
+            No issues were encountered during the process.
+
+            If you have any further queries or need assistance, feel free to contact the IT support team.
+
+            Regards,  
+            IT Support Team
+            """
+        email_sender.send_email(email, subject, body)
+        # email_sender.send_email(email, "SFTP upload successful", "File Uploaded successfully")
 
     except paramiko.AuthenticationException:
+        subject = "SFTP Authentication Failed - Invalid Credentials"
+        body = """
+            Dear User,
+
+            This is to inform you that the authentication attempt to the SFTP server has failed due to invalid credentials.
+
+            Please verify that the username and password you have provided are correct.
+
+            If the issue persists, kindly reach out to the system administrator or support team for assistance.
+
+            Regards,  
+            IT Support Team
+            """
+        email_sender.send_email(email, subject, body)
+        # email_sender.send_email(email, "SFTP Authentication Failed. Invalid username or password.", "Authentication failed while connecting to the SFTP server. Please verify the username and password.")
+
         frappe.logger().error("SFTP authentication failed. Invalid username or password.")
         frappe.throw("Authentication failed while connecting to the SFTP server. Please verify the username and password.")
 
     except paramiko.SSHException as e:
         frappe.logger().error(f"SSH connection error: {e}")
+        email_sender.send_email(email, "SSH error occurred", "An SSH error occurred while trying to connect to the SFTP server. Please check the server status and network connection.")
         frappe.throw("An SSH error occurred while trying to connect to the SFTP server. Please check the server status and network connection.")
 
     except FileNotFoundError as e:
         frappe.logger().error(f"File not found: {e}")
+        email_sender.send_email(email, "File not found", "The specified file was not found. Please verify that the file path is correct.")
         frappe.throw("The specified file was not found. Please verify that the file path is correct.")
 
     except Exception as e:
         frappe.logger().error(f"Unexpected error during SFTP upload: {e}")
+        email_sender.send_email(email, "Unexpected error occurred", "An unexpected error occurred during the SFTP upload. Please check the logs for more details")
         frappe.throw("An unexpected error occurred during the SFTP upload. Please check the logs for more details.")
 
 
 
+
+
+
+@frappe.whitelist()
+def send_email(payment_order_id=None):  
+    #smtp_server = "smtp.office365.com"
+    smtp_server= "email.cloverinfotech.com"
+    smtp_port = 587
+    smtp_user = "adnan.shaikh@cloverinfotech.com"
+    smtp_password = "Clover@10"
+
+    msg = MIMEMultipart()
+    msg["From"] = smtp_user
+    msg["To"] = "subodh.barche@cloverinfotech.com"
+    msg["Subject"] = f"Test Email"
+
+    body = f"This is a test email for Payment Order"
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(msg["From"], msg["To"], msg.as_string())
+            return f"Email sent successfully to {msg['To']}"
+    except Exception as e:
+        frappe.throw(f"Failed to send email: {e}")
+
+
+
+
+
+# @frappe.whitelist()
+# def send_email():
+        
+#         smtp_server = "smtp.office365.com"
+#         smtp_port = 587
+#         smtp_user = "subodh.barche@cloverinfotech.com"
+#         smtp_password = "54321#clover"
+
+#         msg = MIMEMultipart()
+#         msg["From"] = "subodh.barche@cloverinfotech.com"
+#         msg["To"] = "rahul.pawar@cloverinfotech.com"
+#         msg["Subject"] = "Test"
+
+#         body = "This is a test email."
+#         msg.attach(MIMEText(body, "plain"))
+
+#         try:
+#             with smtplib.SMTP(smtp_server, smtp_port) as server:
+#                 server.starttls()
+#                 server.login(smtp_user, smtp_password)
+#                 server.sendmail(from_address, to_address, msg.as_string())
+#                 print("Email sent successfully!")
+#         except Exception as e:
+#             print(f"Failed to send email: {e}")
 
 
 
